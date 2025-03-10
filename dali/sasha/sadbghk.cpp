@@ -95,7 +95,6 @@ public:
 #endif
 
         // iterate debug plane selecting post-mortem directories for housekeeping
-        StringArray expiryFolderlist;
         Owned<IDirectoryIterator> pDirIter = createDirectoryIterator(debugDir.str(), "*", false, true);
         addPathSepChar(debugDir);
         ForEach(*pDirIter)
@@ -129,32 +128,12 @@ public:
 
                 if (isPostMortemDirPath(dirNameOnly) && isExpiredDirPath(dirNameOnly, defaultExpireDays))
                 {
-                    expiryFolderlist.append(dirPath);
+                    recursiveRemoveDirectory(dirPath);
+                    PROGLOG(LOGDBGHK "Deleted %s", dirPath);
                 }
             }
         }
         pDirIter.clear();
-
-        ForEachItemIn(i, expiryFolderlist)
-        {
-            if (stopped)
-                break;
-            const char *lfn = expiryFolderlist.item(i);
-            PROGLOG(LOGDBGHK "Deleting %s", lfn);
-            try
-            {
-                /* NB: 0 timeout, meaning fail and skip, if there is any locking contention.
-                 * If the file is locked, it implies it is being accessed.
-                 */
-                queryDistributedFileDirectory().removeEntry(lfn, udesc, NULL, 0, true);
-                PROGLOG(LOGDBGHK "Deleted %s", lfn);
-            }
-            catch (IException *e) // may want to just detach if fails
-            {
-                EXCLOG(e, LOGDBGHK "remove");
-                e->Release();
-            }
-        }
 
         PROGLOG(LOGDBGHK "%s", stopped ? "Stopped" : "Done");
     }
