@@ -85,7 +85,6 @@ public:
 
         // iterate debug plane selecting post-mortem directories for housekeeping
         Owned<IDirectoryIterator> pDirIter = createDirectoryIterator(debugDir.str(), "*", false, true);
-        addPathSepChar(debugDir);
         ForEach(*pDirIter)
         {
             if (stopped)
