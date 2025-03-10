@@ -36,11 +36,7 @@ public:
         stopped = false;
 
         StringBuffer userName;
-#ifdef _CONTAINERIZED
         props->getProp("@user", userName);
-#else
-        serverConfig->getProp("@sashaUser", userName);
-#endif
         udesc.setown(createUserDescriptor());
         udesc->set(userName.str(), nullptr);
     }
@@ -80,7 +76,6 @@ public:
 
         // get debug plane dir
         StringBuffer debugDir;
-#ifdef _CONTAINERIZED
         StringBuffer planeName;
         if (!getDefaultPlane(planeName, "@debugPlane", "debug"))
         {
@@ -90,9 +85,6 @@ public:
         Owned<IPropertyTree> plane = getStoragePlane(planeName);
         assertex(plane);
         verifyex(plane->getProp("@prefix", debugDir));
-#else
-        verifyex(getConfigurationDirectory(nullptr, "temp", nullptr, "debug", debugDir));
-#endif
 
         // iterate debug plane selecting post-mortem directories for housekeeping
         Owned<IDirectoryIterator> pDirIter = createDirectoryIterator(debugDir.str(), "*", false, true);
@@ -230,13 +222,7 @@ private:
 ISashaServer *createSashaDebugHousekeepingServer()
 {
     assertex(!sashaDebugHousekeepingServer); // initialization problem
-#ifdef _CONTAINERIZED
     Linked<IPropertyTree> config = serverConfig;
-#else
-    Owned<IPropertyTree> config = serverConfig->getPropTree("DbgHk");
-    if (!config)
-        config.setown(createPTree("DbgHk"));
-#endif
     sashaDebugHousekeepingServer = new CSashaDebugHousekeepingServer(config);
     return sashaDebugHousekeepingServer;
 }
