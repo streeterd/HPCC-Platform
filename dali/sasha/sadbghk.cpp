@@ -24,7 +24,6 @@ class CSashaDebugHousekeepingServer : public ISashaServer, public Thread
     bool stopped;
     Semaphore stopsem;
     Mutex runmutex;
-    Owned<IUserDescriptor> udesc;
     Linked<IPropertyTree> props;
 
 public:
@@ -37,8 +36,6 @@ public:
 
         StringBuffer userName;
         props->getProp("@user", userName);
-        udesc.setown(createUserDescriptor());
-        udesc->set(userName.str(), nullptr);
     }
 
     ~CSashaDebugHousekeepingServer()
