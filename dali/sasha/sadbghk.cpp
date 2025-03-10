@@ -191,12 +191,12 @@ private:
         // Directory name is like "W20250225-101112"
         StringBuffer cDateTimeoprmattedString;
         cDateTimeoprmattedString.appendf("%c%c%c%c-%c%c-%c%cT%c%c:%c%c:%c%c",
-                                        dirName.charAt(1), dirName.charAt(2), dirName.charAt(3), dirName.charAt(4),
-                                        dirName.charAt(5), dirName.charAt(6),
-                                        dirName.charAt(7), dirName.charAt(8),
-                                        dirName.charAt(10), dirName.charAt(11),
-                                        dirName.charAt(12), dirName.charAt(13),
-                                        dirName.charAt(14), dirName.charAt(15));
+                                         dirName.charAt(1), dirName.charAt(2), dirName.charAt(3), dirName.charAt(4),
+                                         dirName.charAt(5), dirName.charAt(6),
+                                         dirName.charAt(7), dirName.charAt(8),
+                                         dirName.charAt(10), dirName.charAt(11),
+                                         dirName.charAt(12), dirName.charAt(13),
+                                         dirName.charAt(14), dirName.charAt(15));
 
         CDateTime now;
         now.setNow();
