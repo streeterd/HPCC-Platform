@@ -102,14 +102,14 @@ public:
             if (stopped)
                 break;
 
-            IFile &iFile = pDirIter->query();
-            const char *dirPath = iFile.queryFilename();
+            IFile &iDirFile = pDirIter->query();
+            const char *dirPath = iDirFile.queryFilename();
 
             if (!dirPath || !*dirPath)
                 continue;
 
-            // Process directories, but not the "." and ".." and non post-mortem and not expired post-mortem directories
-            if (iFile.isDirectory() == fileBool::foundYes && *dirPath != '.')
+            // Process directories, exclude the ".", "..", non post-mortem and not expired post-mortem directories
+            if (iDirFile.isDirectory() == fileBool::foundYes && *dirPath != '.')
             {
                 // Ensure directory name only
                 StringBuffer dirNameOnly;
@@ -179,8 +179,8 @@ private:
     bool isPostMortemDirPath(const StringBuffer &dirName)
     {
         // Expecting a directory name like "W20250225-101112"
-        RegExpr RE("^W[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]$");
-        if (RE.find(dirName.str()))
+        RegExpr postMortemDirRegEx("^W[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]$");
+        if (postMortemDirRegEx.find(dirName.str()))
         {
             PROGLOG(LOGDBGHK "Post-mortem dir: %s", dirName.str());
 
@@ -197,8 +197,8 @@ private:
     bool isExpiredDirPath(StringBuffer &dirName, const unsigned &defaultExpireDays)
     {
         // Directory name is like "W20250225-101112"
-        StringBuffer formattedDateTimeString;
-        formattedDateTimeString.appendf("%c%c%c%c-%c%c-%c%cT%c%c:%c%c:%c%c",
+        StringBuffer cDateTimeoprmattedString;
+        cDateTimeoprmattedString.appendf("%c%c%c%c-%c%c-%c%cT%c%c:%c%c:%c%c",
                                         dirName.charAt(1), dirName.charAt(2), dirName.charAt(3), dirName.charAt(4),
                                         dirName.charAt(5), dirName.charAt(6),
                                         dirName.charAt(7), dirName.charAt(8),
@@ -210,7 +210,7 @@ private:
         now.setNow();
 
         CDateTime expires;
-        expires.setString(formattedDateTimeString.str());
+        expires.setString(cDateTimeoprmattedString.str());
         expires.adjustTime(60 * 24 * defaultExpireDays);
 
         if (now.compare(expires, false) > 0)
