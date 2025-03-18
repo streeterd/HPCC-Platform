@@ -54,8 +54,9 @@ extern void LDStest();
 Owned<IPropertyTree> serverConfig;
 static IArrayOf<ISashaServer> servers;
 static std::atomic<unsigned> StopSuspendCount{0};
-static bool stopped = false;
+static bool stopped{false};
 static Semaphore stopSem;
+static bool isDaliClient{false};
 
 const char *sashaProgramName;
 
@@ -239,6 +240,29 @@ public:
 
 void SashaMain()
 {
+    if (!isDaliClient)
+    {
+        bool stopped = false;
+        class AbortHandler : implements CSimpleInterfaceOf<IAbortHandler>
+        {
+            bool stopped = false;
+        public:
+            AbortHandler(bool &_stopped) : stopped(_stopped) {}
+            virtual bool onAbort() override
+            {
+                PROGLOG("Aborted");
+                stopped = true;
+                return false;
+            }
+        } abortHandler(stopped);
+ 
+        addAbortHandler(abortHandler);
+        while (!stopped)
+        {            
+        }
+        return;
+    }
+
     IInterCommunicator & comm=queryWorldCommunicator();
     unsigned start = msTick();
     unsigned timeout = serverConfig->getPropInt("@autoRestartInterval")*1000*60*60;
@@ -330,6 +354,7 @@ int main(int argc, const char* argv[])
     try
     {
         serverConfig.setown(loadConfiguration(defaultYaml, argv, "sasha", "SASHA", "sashaconf.xml", nullptr));
+        isDaliClient = serverConfig->hasProp("[access='dali']");
 
         Owned<IFile> sentinelFile;
 
@@ -379,17 +404,21 @@ int main(int argc, const char* argv[])
                 writeSentinelFile(sentinelFile);
         }
 #endif
-        StringBuffer daliServer;
-        if (!serverConfig->getProp("@daliServers", daliServer))
-            serverConfig->getProp("@DALISERVERS", daliServer); // @DALISERVERS legacy/bare-metal
-        if (0 == daliServer.length())
+        if (isDaliClient)
         {
-            PROGLOG("DALISERVERS not specified in sashaconf.xml");
-            return 1;
+            PROGLOG("Connecting to DALISERVERS.");
+            StringBuffer daliServer;
+            if (!serverConfig->getProp("@daliServers", daliServer))
+                serverConfig->getProp("@DALISERVERS", daliServer); // @DALISERVERS legacy/bare-metal
+            if (0 == daliServer.length())
+            {
+                PROGLOG("DALISERVERS not specified in sashaconf.xml");
+                return 1;
+            }
+            Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
+            initClientProcess(serverGroup, DCR_SashaServer, port, nullptr, nullptr, MP_WAIT_FOREVER, true);
         }
-        Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
-        initClientProcess(serverGroup, DCR_SashaServer, port, nullptr, nullptr, MP_WAIT_FOREVER, true);
-
+        
         if (stop)
             stopSashaServer((argc>2)?argv[2]:"", DEFAULT_SASHA_PORT);
         else
@@ -447,9 +476,6 @@ int main(int argc, const char* argv[])
                 AddServers();
 #endif
 
-                StringBuffer eps;
-                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getEndpointHostText(eps).str());
-
                 ForEachItemIn(i1,servers)
                 {
                     ISashaServer &server=servers.item(i1);
@@ -472,8 +498,11 @@ int main(int argc, const char* argv[])
                         if (!stopped)
                         {
                             stopped = true;
-                            IInterCommunicator &comm=queryWorldCommunicator();
-                            comm.cancel(NULL, MPTAG_SASHA_REQUEST);
+                            if (isDaliClient)
+                            {
+                                IInterCommunicator &comm = queryWorldCommunicator();
+                                comm.cancel(NULL, MPTAG_SASHA_REQUEST);
+                            }
                         }
                     }
                 } *stopThread = new CStopThread;
@@ -488,7 +517,8 @@ int main(int argc, const char* argv[])
                 removeThreadExceptionHandler(&exceptionStopHandler);
 
                 stopSem.signal();
-                delete stopThread;
+                if (isDaliClient)
+                    delete stopThread;
 
                 PROGLOG("SASERVER exiting");
 #ifndef _CONTAINERIZED
@@ -517,9 +547,12 @@ int main(int argc, const char* argv[])
     serverConfig.clear();
     try
     {
-        closeDllServer();
         closeEnvironment();
-        closedownClientProcess();
+        if (isDaliClient)
+        {
+            closeDllServer();
+            closedownClientProcess();
+        }
     }
     catch (IException *) {  // dali may be down
     }
