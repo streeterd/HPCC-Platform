@@ -512,7 +512,7 @@ sasha:
     resources:
       cpu: "1"
       memory: "4Gi"
-      
+
   debugplane-housekeeping:
     #disabled: true
     #interval: 1
