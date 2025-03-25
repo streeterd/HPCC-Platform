@@ -397,7 +397,7 @@ int main(int argc, const char* argv[])
         {
             PROGLOG("Not connecting to DALISERVERS as no access/dali in config");
             dbglogXML(getComponentConfigSP());
-            dbglogXML(serverConfig);
+            dbglogYAML(getComponentConfigSP());
         }
         
         if (stop)
