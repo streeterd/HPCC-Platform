@@ -379,7 +379,7 @@ int main(int argc, const char* argv[])
                 writeSentinelFile(sentinelFile);
         }
 #endif
-        if (getComponentConfigSP()->hasProp("access/dali"))
+        if (getComponentConfigSP()->hasProp("[access='dali']"))
         {
             PROGLOG("Connecting to DALISERVERS.");
             StringBuffer daliServer;
