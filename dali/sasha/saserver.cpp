@@ -40,6 +40,7 @@
 #include "saarch.hpp"
 #include "saverify.hpp"
 #include "saxref.hpp"
+#include "sadbghk.hpp"
 #include "saqmon.hpp"
 #include "sacoalescer.hpp"
 #include "sacmd.hpp"
@@ -443,6 +444,8 @@ int main(int argc, const char* argv[])
                     servers.append(*createSashaFileExpiryServer());
                 else if (strieq(service, "thor-qmon"))
                     servers.append(*createSashaQMonitorServer());
+                else if (strieq(service, "debugplane-housekeeping"))
+                    servers.append(*createSashaDebugPlaneHousekeepingServer());
                 //else if (strieq(service, "xref")) // TODO
                 //    servers.append(*createSashaXrefServer());
                 else
