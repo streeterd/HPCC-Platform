@@ -342,7 +342,6 @@ int main(int argc, const char* argv[])
     Thread::setDefaultStackSize(0x20000);
 #endif
     setDaliServixSocketCaching(true);
-    isDaliClient = getComponentConfigSP()->hasProp("[access='dali']");
     bool stop = false;
     bool coalescer = false;
     bool force = false;
@@ -355,6 +354,7 @@ int main(int argc, const char* argv[])
     try
     {
         serverConfig.setown(loadConfiguration(defaultYaml, argv, "sasha", "SASHA", "sashaconf.xml", nullptr));
+        isDaliClient = getComponentConfigSP()->hasProp("[access='dali']");
 
         Owned<IFile> sentinelFile;
 
@@ -418,12 +418,6 @@ int main(int argc, const char* argv[])
             Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
             initClientProcess(serverGroup, DCR_SashaServer, port, nullptr, nullptr, MP_WAIT_FOREVER, true);
         }
-        else
-        {
-            PROGLOG("Not connecting to DALISERVERS as no access=dali in config");
-            dbglogXML(getComponentConfigSP());
-            dbglogYAML(getComponentConfigSP());
-        }
         
         if (stop)
             stopSashaServer((argc>2)?argv[2]:"", DEFAULT_SASHA_PORT);
@@ -481,9 +475,6 @@ int main(int argc, const char* argv[])
                 startPerformanceMonitor(serverConfig->getPropInt("@perfReportDelay", DEFAULT_PERF_REPORT_DELAY)*1000);
                 AddServers();
 #endif
-
-//TODO                StringBuffer eps;
-//TODO                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getEndpointHostText(eps).str());
 
                 ForEachItemIn(i1,servers)
                 {
@@ -561,10 +552,6 @@ int main(int argc, const char* argv[])
         {
             closeDllServer();
             closedownClientProcess();
-        }
-        else
-        {
-            PROGLOG("Not closeDllServer() nor closedownClientProcess() as no access=dali in config");
         }
     }
     catch (IException *) {  // dali may be down
