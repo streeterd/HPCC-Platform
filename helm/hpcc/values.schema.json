@@ -2918,6 +2918,7 @@
               "default": "7"
             },
             "disabled": {},
+            "hold": {},
             "interval": {},
             "service": {},
             "at" : {},
@@ -3068,6 +3069,7 @@
           "default": "14"
         },
         "disabled": {},
+        "hold": {},
         "interval": {},
         "at" : {},
         "image": {},

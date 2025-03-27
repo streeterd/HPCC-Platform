@@ -54,8 +54,9 @@ extern void LDStest();
 Owned<IPropertyTree> serverConfig;
 static IArrayOf<ISashaServer> servers;
 static std::atomic<unsigned> StopSuspendCount{0};
-static bool stopped = false;
+static bool stopped{false};
 static Semaphore stopSem;
+static bool isDaliClient{false};
 
 const char *sashaProgramName;
 
@@ -239,6 +240,29 @@ public:
 
 void SashaMain()
 {
+    if (!isDaliClient)
+    {
+        bool stopped = false;
+        class AbortHandler : implements CSimpleInterfaceOf<IAbortHandler>
+        {
+            bool stopped = false;
+        public:
+            AbortHandler(bool &_stopped) : stopped(_stopped) {}
+            virtual bool onAbort() override
+            {
+                PROGLOG("Aborted");
+                stopped = true;
+                return false;
+            }
+        } abortHandler(stopped);
+ 
+        addAbortHandler(abortHandler);
+        while (!stopped)
+        {            
+        }
+        return;
+    }
+
     IInterCommunicator & comm=queryWorldCommunicator();
     unsigned start = msTick();
     unsigned timeout = serverConfig->getPropInt("@autoRestartInterval")*1000*60*60;
@@ -318,6 +342,7 @@ int main(int argc, const char* argv[])
     Thread::setDefaultStackSize(0x20000);
 #endif
     setDaliServixSocketCaching(true);
+    isDaliClient = getComponentConfigSP()->hasProp("[access='dali']");
     bool stop = false;
     bool coalescer = false;
     bool force = false;
@@ -379,7 +404,7 @@ int main(int argc, const char* argv[])
                 writeSentinelFile(sentinelFile);
         }
 #endif
-        if (getComponentConfigSP()->hasProp("[access='dali']"))
+        if (isDaliClient)
         {
             PROGLOG("Connecting to DALISERVERS.");
             StringBuffer daliServer;
@@ -395,7 +420,7 @@ int main(int argc, const char* argv[])
         }
         else
         {
-            PROGLOG("Not connecting to DALISERVERS as no access/dali in config");
+            PROGLOG("Not connecting to DALISERVERS as no access=dali in config");
             dbglogXML(getComponentConfigSP());
             dbglogYAML(getComponentConfigSP());
         }
@@ -457,8 +482,8 @@ int main(int argc, const char* argv[])
                 AddServers();
 #endif
 
-                StringBuffer eps;
-                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getEndpointHostText(eps).str());
+//TODO                StringBuffer eps;
+//TODO                PROGLOG("SASERVER starting on %s",queryMyNode()->endpoint().getEndpointHostText(eps).str());
 
                 ForEachItemIn(i1,servers)
                 {
@@ -482,8 +507,11 @@ int main(int argc, const char* argv[])
                         if (!stopped)
                         {
                             stopped = true;
-                            IInterCommunicator &comm=queryWorldCommunicator();
-                            comm.cancel(NULL, MPTAG_SASHA_REQUEST);
+                            if (isDaliClient)
+                            {
+                                IInterCommunicator &comm = queryWorldCommunicator();
+                                comm.cancel(NULL, MPTAG_SASHA_REQUEST);
+                            }
                         }
                     }
                 } *stopThread = new CStopThread;
@@ -498,7 +526,8 @@ int main(int argc, const char* argv[])
                 removeThreadExceptionHandler(&exceptionStopHandler);
 
                 stopSem.signal();
-                delete stopThread;
+                if (isDaliClient)
+                    delete stopThread;
 
                 PROGLOG("SASERVER exiting");
 #ifndef _CONTAINERIZED
@@ -528,14 +557,14 @@ int main(int argc, const char* argv[])
     try
     {
         closeEnvironment();
-        if (getComponentConfigSP()->hasProp("access/dali"))
+        if (isDaliClient)
         {
             closeDllServer();
             closedownClientProcess();
         }
         else
         {
-            PROGLOG("Not closeDllServer() nor closedownClientProcess() as no access/dali in config");
+            PROGLOG("Not closeDllServer() nor closedownClientProcess() as no access=dali in config");
         }
     }
     catch (IException *) {  // dali may be down
