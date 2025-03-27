@@ -354,7 +354,7 @@ int main(int argc, const char* argv[])
     try
     {
         serverConfig.setown(loadConfiguration(defaultYaml, argv, "sasha", "SASHA", "sashaconf.xml", nullptr));
-        isDaliClient = getComponentConfigSP()->hasProp("[access='dali']");
+        isDaliClient = serverConfig->hasProp("[access='dali']");
 
         Owned<IFile> sentinelFile;
 
