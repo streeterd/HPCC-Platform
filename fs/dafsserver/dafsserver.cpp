@@ -3531,8 +3531,8 @@ class CRemoteFileServer : implements IRemoteFileServer, public CInterface
     Owned<ISocketSelectHandler> selecthandler;
     Owned<IThreadPool>  threads;    // for commands
     bool stopping;
-    unsigned clientcounttick;
-    unsigned closedclients;
+    unsigned clientcounttick;   // is only touched/read by checkTimeout() that is not contended itself.
+    unsigned closedclients;   // is only touched/read by checkTimeout() that is not contended itself.
     CAsyncCommandManager asyncCommandManager;
     CThrottler stdCmdThrottler, slowCmdThrottler;
     CClientStatsTable clientStatsTable;
@@ -3811,9 +3811,9 @@ public:
 
     //MORE: The file handles should timeout after a while, and accessing an old (invalid handle)
     // should throw a different exception
-    bool checkFileIOHandle(int handle, IFileIO *&fileio, bool del=false)
+    bool checkFileIOHandle(int handle, Owned<IFileIO> & fileio, bool del=false)
     {
-        fileio = NULL;
+        fileio.clear();
         if (handle<=0)
             return false;
         CriticalBlock block(sect);
@@ -3832,7 +3832,7 @@ public:
             }
             else
             {
-               fileio = client.openFiles.item(handleidx).fileIO;
+               fileio.set(client.openFiles.item(handleidx).fileIO);
                client.previdx = handleidx;
             }
             return true;
@@ -3840,7 +3840,7 @@ public:
         return false;
     }
 
-    void checkFileIOHandle(MemoryBuffer &reply, int handle, IFileIO *&fileio, bool del=false)
+    void checkFileIOHandle(MemoryBuffer &reply, int handle, Owned<IFileIO> & fileio, bool del=false)
     {
         if (!checkFileIOHandle(handle, fileio, del))
             throw createDafsException(RFSERR_InvalidFileIOHandle, nullptr);
@@ -4009,7 +4009,7 @@ public:
     {
         int handle;
         msg.read(handle);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio, true);
         if (TF_TRACE)
             PROGLOG("close file, handle = %d",handle);
@@ -4023,7 +4023,7 @@ public:
         __int64 pos;
         size32_t len;
         msg.read(handle).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
 
         //arrange it so we read directly into the reply buffer...
@@ -4047,7 +4047,7 @@ public:
     {
         int handle;
         msg.read(handle);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         __int64 size = fileio->size();
         reply.append((unsigned)RFEnoerror).append(size);
@@ -4060,9 +4060,9 @@ public:
         int handle;
         offset_t size;
         msg.read(handle).read(size);
-        IFileIO *fileio;
         if (TF_TRACE)
             PROGLOG("set size file, handle = %d, size = %" I64F "d",handle,size);
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         fileio->setSize(size);
         reply.append((unsigned)RFEnoerror);
@@ -4074,7 +4074,7 @@ public:
         __int64 pos;
         size32_t len;
         msg.read(handle).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
         const byte *data = (const byte *)msg.readDirect(len);
         if (TF_TRACE_PRE_IO)
@@ -4169,7 +4169,7 @@ public:
         __int64 len;
         StringAttr srcname;
         msg.read(handle).read(srcname).read(pos).read(len);
-        IFileIO *fileio;
+        Owned<IFileIO> fileio;
         checkFileIOHandle(reply, handle, fileio);
 
         Owned<IFile> file = createIFile(srcname.get());
@@ -5045,11 +5045,12 @@ public:
                 if (0 == cursorHandle)
                 {
                     IDAFS_Exception* exception = createDafsException(DAFSERR_cmdstream_protocol_failure, "cursor handle not supplied to 'close' command");
-                    closeSpan->recordException(exception);
+                    if (closeSpan)
+                        closeSpan->recordException(exception);
                     throw exception;
                 }
 
-                IFileIO *dummy;
+                Owned<IFileIO> dummy;
                 checkFileIOHandle(cursorHandle, dummy, true);
                 break;
             }
@@ -5834,41 +5835,43 @@ public:
 
     void checkTimeout()
     {
-        if (msTick()-clientcounttick>1000*60*60)
+        if (msTick() - clientcounttick > 1000 * 60 * 60)
         {
-            CriticalBlock block(ClientCountSect);
-            if (TF_TRACE_CLIENT_STATS && (ClientCount || MaxClientCount))
-                PROGLOG("Client count = %d, max = %d", ClientCount, MaxClientCount);
-            clientcounttick = msTick();
-            MaxClientCount = ClientCount;
+            {
+                CriticalBlock block(ClientCountSect);
+                if (TF_TRACE_CLIENT_STATS && (ClientCount || MaxClientCount))
+                    PROGLOG("Client count = %d, max = %d", ClientCount, MaxClientCount);
+                MaxClientCount = ClientCount;
+            }
             if (closedclients)
             {
                 if (TF_TRACE_CLIENT_STATS)
-                    PROGLOG("Closed client count = %d",closedclients);
+                    PROGLOG("Closed client count = %d", closedclients);
                 closedclients = 0;
             }
+            clientcounttick = msTick();
         }
         CriticalBlock block(sect);
-        ForEachItemInRev(i,clients)
+        ForEachItemInRev(i, clients)
         {
             CRemoteClientHandler &client = clients.item(i);
             if (client.timedOut())
             {
                 StringBuffer s;
-                bool ok = client.getInfo(s);    // will spot duff sockets
-                if (ok&&(client.openFiles.ordinality()!=0))
+                bool ok = client.getInfo(s); // will spot duff sockets
+                if (ok && (client.openFiles.ordinality() != 0))
                 {
                     if (TF_TRACE_CLIENT_CONN && client.inactiveTimedOut())
-                        WARNLOG("Inactive %s",s.str());
+                        WARNLOG("Inactive %s", s.str());
                 }
                 else
                 {
 #ifndef _DEBUG
                     if (TF_TRACE_CLIENT_CONN)
 #endif
-                        PROGLOG("Timing out %s",s.str());
+                        PROGLOG("Timing out %s", s.str());
                     closedclients++;
-                    onCloseSocket(&client,4);   // removes owned handles
+                    onCloseSocket(&client, 4); // removes owned handles
                 }
             }
         }

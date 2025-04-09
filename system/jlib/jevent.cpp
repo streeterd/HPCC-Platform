@@ -19,10 +19,13 @@
 #include "jevent.hpp"
 
 #include "jdebug.hpp"
+#include "jstream.hpp"
 #include "jthread.hpp"
 #include "jtrace.hpp"
 #include "jfile.hpp"
 #include "jlog.hpp"
+#include "jstring.hpp"
+#include <iostream>
 
 // Should be increased if the file format changes
 // Should be increased whenever new attributes are added - unless attribute types are specified in the file
@@ -43,6 +46,15 @@ enum EventFlags : unsigned
 BITMASK_ENUM(EventFlags);
 
 static constexpr unsigned defaultEventFlags = ERFthreadid;
+
+inline void TRACEEVENT(char const * format, ...) __attribute__((format(printf, 1, 2)));
+inline void TRACEEVENT(char const * format, ...)
+{
+    va_list args;
+    va_start(args, format);
+    VALOG(MCmonitorEvent, format, args);
+    va_end(args);
+}
 
 //---------------------------------------------------------------------------------------------------------------------
 //
@@ -65,11 +77,17 @@ static constexpr EventInformation eventInformation[] {
     DEFINE_EVENT(IndexLookup),
     DEFINE_EVENT(IndexLoad),
     DEFINE_EVENT(IndexEviction),
+    DEFINE_EVENT(DaliChangeMode),
+    DEFINE_EVENT(DaliCommit),
     DEFINE_EVENT(DaliConnect),
-    DEFINE_EVENT(DaliRead),
-    DEFINE_EVENT(DaliWrite),
-    DEFINE_EVENT(DaliDisconnect),
+    DEFINE_EVENT(DaliEnsureLocal),
+    DEFINE_EVENT(DaliGet),
+    DEFINE_EVENT(DaliGetChildren),
+    DEFINE_EVENT(DaliGetChildrenFor),
+    DEFINE_EVENT(DaliGetElements),
+    DEFINE_EVENT(DaliSubscribe),
     DEFINE_META(FileInformation),
+    DEFINE_EVENT(RecordingActive),
 };
 static_assert(_elements_in(eventInformation) == EventMax);
 
@@ -112,6 +130,15 @@ static constexpr EventAttrInformation attrInformation[] = {
     DEFINE_ATTR(InCache, bool),
     DEFINE_ATTR(Path, string),
     DEFINE_ATTR(ConnectId, u8),
+    DEFINE_ATTR(Enabled, bool),
+    DEFINE_ATTR(RecordedFileSize, u8),
+    DEFINE_ATTR(RecordedTimestamp, u8),
+    DEFINE_ATTR(RecordedOption, string),
+    DEFINE_ATTR(EventTimeOffset, u8),
+    DEFINE_ATTR(EventTraceId, string),
+    DEFINE_ATTR(EventThreadId, u8),
+    DEFINE_ATTR(EventStackTrace, string),
+    DEFINE_ATTR(DataSize, u4),
 };
 
 static_assert(_elements_in(attrInformation) == EvAttrMax);
@@ -224,12 +251,15 @@ void EventRecorder::checkAttrValue(EventAttr attr, size_t size)
     assertex(expectedSize == 0 || expectedSize == size);
 }
 
-void EventRecorder::startRecording(const char * optionsText, const char * filename)
+bool EventRecorder::startRecording(const char * optionsText, const char * filename, bool pause)
 {
     assertex(filename);
     CriticalBlock block(cs);
-    if (isActive())
-        return;
+    if (!isStopped)
+        return false;
+    assertex(!isStarted);
+    isStarted = true;
+    isStopped = false;
 
     auto processOption = [this](const char * option, const char * valueText)
     {
@@ -241,21 +271,29 @@ void EventRecorder::startRecording(const char * optionsText, const char * filena
             options = (options & ~ERFthreadid) | (valueBool ? ERFthreadid : ERFnone);
         else if (strieq(option, "stack"))
             options = (options & ~ERFstacktrace) | (valueBool ? ERFstacktrace : ERFnone);
+        else if (strieq(option, "all"))
+            options = (valueBool ? ~ERFnone : ERFnone);
+        else if (strieq(option, "log"))
+            outputToLog = valueBool;
     };
 
     options = defaultEventFlags;
+    outputToLog = false;
+
     processOptionString(optionsText, processOption);
     sizeMessageHeaderFooter = sizeof(EventType) + sizeof(__uint64) + sizeof(EventAttr); // event type, timestamp and end of attributes marker
     if (options & ERFthreadid)
         sizeMessageHeaderFooter += sizeof(__uint64);
     if (options & ERFtraceid)
-        sizeMessageHeaderFooter += 32;
+        sizeMessageHeaderFooter += 16;
 
+    outputFilename.set(filename);
     Owned<IFile> outputFile = createIFile(filename);
     output.setown(outputFile->open(IFOcreate));
 
-    startCycles = get_cycles_now();
     __uint64 startTimestamp = getTimeStampNowValue()*1000;
+    numEvents = 0;
+    startCycles = get_cycles_now();
 
     //Revisit: If the file is being compressed, then these fields should be output uncompressed at the head
     offset_type pos = 0;
@@ -265,15 +303,21 @@ void EventRecorder::startRecording(const char * optionsText, const char * filena
     nextOffset = pos;
     nextWriteOffset = 0;
     for (unsigned i=0; i < numBlocks; i++)
-        counts[i] = 0;
+        pendingEventCounts[i] = 0;
 
-    recordingEvents.store(true, std::memory_order_release);
+    recordingEvents.store(!pause, std::memory_order_release);
+    return true;
 }
 
-void EventRecorder::stopRecording()
+bool EventRecorder::stopRecording(EventRecordingSummary * optSummary)
 {
-    if (!isActive())
-        return;
+    {
+        CriticalBlock block(cs);
+        if (!isStarted)
+            return false;
+        isStarted = false;
+        assertex(!isStopped);
+    }
 
     //MORE: Protect against startRecording() being called concurrently, by introducing another boolean to
     //indicate if it is active, which is only cleared once this function completes.
@@ -299,9 +343,41 @@ void EventRecorder::stopRecording()
         writeBlock(nextOffset, nextOffset & blockMask);
 
         //Flush the data, after waiting for a little while (or until committed == offset)?
+        if (optSummary)
+        {
+            optSummary->filename.set(outputFilename);
+            optSummary->numEvents = numEvents;
+            optSummary->totalSize = output->getStatistic(StSizeDiskWrite);
+        }
+
         output->close();
         output.clear();
+
+        isStopped = true;
     }
+
+    return true;
+}
+
+bool EventRecorder::pauseRecording(bool pause, bool recordChange)
+{
+    CriticalBlock block(cs);
+    if (!isStarted || isStopped)
+        return false;
+
+    bool recordingInFuture = !pause;
+    if (recordingEvents != recordingInFuture)
+    {
+        if (recordingInFuture)
+            recordingEvents = true;
+
+        if (recordChange)
+            recordRecordingActive(recordingInFuture);
+
+        if (!recordingInFuture)
+            recordingEvents = false;
+    }
+    return true;
 }
 
 //See notes above about reseving and committing events
@@ -312,7 +388,8 @@ EventRecorder::offset_type EventRecorder::reserveEvent(size32_t size)
         CriticalBlock block(cs);
         offset = nextOffset;
         nextOffset += size;
-        counts[getBlockFromOffset(offset)]++;
+        pendingEventCounts[getBlockFromOffset(offset)]++;
+        numEvents++;
     }
     return offset;
 }
@@ -325,11 +402,11 @@ void EventRecorder::commitEvent(offset_type startOffset, size32_t size)
     {
         CriticalBlock block(cs);
 
-        prevCount = counts[thisBlock];
+        prevCount = pendingEventCounts[thisBlock];
         if (likely(prevCount != 0))
         {
             unsigned count = prevCount - 1;
-            counts[thisBlock] = count;
+            pendingEventCounts[thisBlock] = count;
             if (count == 0)
             {
                 if (getBlockFromOffset(nextOffset) != thisBlock)
@@ -369,10 +446,29 @@ static_assert(getSizeOfAttrs(1U, 3ULL) == 2 * sizeof(EventAttr) + 4 + 8);
 static_assert(getSizeOfAttrs("gavin") == sizeof(EventAttr) + 6);
 static_assert(getSizeOfAttrs(true, 32768U, 1ULL, "boris", "blob") == 5 * sizeof(EventAttr) + 1 + 4 + 8 + 6 + 5);
 
+void EventRecorder::recordRecordingActive(bool enabled)
+{
+    if (!isRecording())
+        return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"RecordingActive\", \"enabled\": %s }", boolToStr(enabled));
+
+    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(enabled);
+    offset_type writeOffset = reserveEvent(requiredSize);
+    offset_type pos = writeOffset;
+    writeEventHeader(EventRecordingActive, pos);
+    write(pos, EvAttrEnabled, enabled);
+    writeEventFooter(pos, requiredSize, writeOffset);
+}
+
 void EventRecorder::recordIndexLookup(unsigned fileid, offset_t offset, byte nodeKind, bool hit)
 {
-    if (!isActive())
+    if (!isRecording())
         return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"IndexLookup\", \"file\": %u, \"offset\"=0x%llx, \"kind\": %d, \"hit\": %s }", fileid, offset, nodeKind, boolToStr(hit));
 
     size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(fileid, offset, nodeKind, hit);
     offset_type writeOffset = reserveEvent(requiredSize);
@@ -387,8 +483,11 @@ void EventRecorder::recordIndexLookup(unsigned fileid, offset_t offset, byte nod
 
 void EventRecorder::recordIndexLoad(unsigned fileid, offset_t offset, byte nodeKind, size32_t size, __uint64 elapsedTime, __uint64 readTime)
 {
-    if (!isActive())
+    if (!isRecording())
         return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"IndexLoad\", \"file\": %u, \"offset\"=0x%llx, \"kind\": %d, \"size\": %u, \"elapsed\": %llu, \"read\": %llu }", fileid, offset, nodeKind, size, elapsedTime, readTime);
 
     size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(fileid, offset, nodeKind, size, elapsedTime, readTime);
     offset_type writeOffset = reserveEvent(requiredSize);
@@ -405,8 +504,11 @@ void EventRecorder::recordIndexLoad(unsigned fileid, offset_t offset, byte nodeK
 
 void EventRecorder::recordIndexEviction(unsigned fileid, offset_t offset, byte nodeKind, size32_t size)
 {
-    if (!isActive())
+    if (!isRecording())
         return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"IndexEviction\", \"file\": %u, \"offset\"=0x%llx, \"kind\": %d, \"size\": %u }", fileid, offset, nodeKind, size);
 
     size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(fileid, offset, nodeKind, size);
     offset_type writeOffset = reserveEvent(requiredSize);
@@ -419,32 +521,107 @@ void EventRecorder::recordIndexEviction(unsigned fileid, offset_t offset, byte n
     writeEventFooter(pos, requiredSize, writeOffset);
 }
 
-void EventRecorder::recordDaliConnect(const char * path, __uint64 id)
+void EventRecorder::recordDaliEvent(EventType event, const char * path, __int64 id, stat_type elapsedNs, size32_t dataSize)
 {
-    if (!isActive())
+    if (!isRecording())
         return;
 
-    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(path, id);
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"%s\", \"path\": \"%s\", \"id\"=0x%llx, \"elapsedNs\": %llu, \"dataSize\": %u }", queryEventName(event), path, id, elapsedNs, dataSize);
+
+    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(path, id, elapsedNs, dataSize);
     offset_type writeOffset = reserveEvent(requiredSize);
     offset_type pos = writeOffset;
-    writeEventHeader(EventDaliConnect, pos);
+    writeEventHeader(event, pos);
     write(pos, EvAttrPath, path);
     write(pos, EvAttrConnectId, id);
+    write(pos, EvAttrElapsedTime, elapsedNs);
+    write(pos, EvAttrDataSize, dataSize);
     writeEventFooter(pos, requiredSize, writeOffset);
 }
 
-void EventRecorder::recordDaliDisconnect(__uint64 id)
+void EventRecorder::recordDaliEvent(EventType event, __int64 id, stat_type elapsedNs, size32_t dataSize)
 {
-    if (!isActive())
+    if (!isRecording())
         return;
 
-    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(id);
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"%s\", \"id\"=0x%llx, \"elapsedNs\": %llu, \"dataSize\": %u }", queryEventName(event), id, elapsedNs, dataSize);
+
+    //MORE: Should the time stamp be adjusted by the elapsed time??
+    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(id, elapsedNs, dataSize);
     offset_type writeOffset = reserveEvent(requiredSize);
     offset_type pos = writeOffset;
-    writeEventHeader(EventDaliConnect, pos);
+    writeEventHeader(event, pos);
     write(pos, EvAttrConnectId, id);
+    write(pos, EvAttrElapsedTime, elapsedNs);
+    write(pos, EvAttrDataSize, dataSize);
     writeEventFooter(pos, requiredSize, writeOffset);
 }
+
+void EventRecorder::recordFileInformation(unsigned fileid, const char * filename)
+{
+    //Meta data is logged whether or not recording is paused, check that logging is enabled.
+    if (!isStarted || isStopped)
+        return;
+
+    if (unlikely(outputToLog))
+        TRACEEVENT("{ \"name\": \"MetaFileInformation\", \"file\": %u, \"path\"=\"%s\" }", fileid, filename);
+
+    size32_t requiredSize = sizeMessageHeaderFooter + getSizeOfAttrs(fileid, filename);
+    offset_type writeOffset = reserveEvent(requiredSize);
+    offset_type pos = writeOffset;
+    writeEventHeader(MetaFileInformation, pos);
+    write(pos, EvAttrFileId, fileid);
+    write(pos, EvAttrPath, filename);
+    writeEventFooter(pos, requiredSize, writeOffset);
+}
+
+void EventRecorder::recordDaliChangeMode(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliChangeMode, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliCommit(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliCommit, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliConnect(const char * path, __int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliConnect, path, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliEnsureLocal(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliEnsureLocal, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliGet(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliGet, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliGetChildren(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliGetChildren, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliGetChildrenFor(__int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliGetChildrenFor, id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliGetElements(const char * path, __int64 id, stat_type elapsedNs, size32_t dataSize)
+{
+    recordDaliEvent(EventDaliGetElements, path ? path : "", id, elapsedNs, dataSize);
+}
+
+void EventRecorder::recordDaliSubscribe(const char * xpath, __int64 id, stat_type elapsedNs)
+{
+    recordDaliEvent(EventDaliSubscribe, xpath, id, elapsedNs, 0);
+}
+
 
 void EventRecorder::writeEventHeader(EventType type, offset_type & offset)
 {
@@ -457,7 +634,11 @@ void EventRecorder::writeEventHeader(EventType type, offset_type & offset)
     {
         const char * traceid = queryThreadedActiveSpan()->queryTraceId();
         assertex(strlen(traceid) == 32);
-        writeData(offset, 32, traceid);
+        for (unsigned i=0; i < 32; i += 2)
+        {
+            byte next = getHexPair(traceid + i);
+            writeByte(offset, next);
+        }
     }
     if (options & ERFthreadid)
     {
@@ -491,6 +672,14 @@ void EventRecorder::writeData(offset_type & offset, size_t size, const void * da
     offset += size;
 }
 
+void EventRecorder::writeByte(offset_type & offset, byte value)
+{
+    byte * target = (byte *)buffer.mem();
+    size32_t buffOffset = offset & bufferMask;
+    target[buffOffset] = value;
+    offset++;
+}
+
 void EventRecorder::writeBlock(offset_type startOffset, size32_t size)
 {
     //MORE: How does this know that other threads have written all their data???
@@ -512,6 +701,367 @@ void EventRecorder::writeBlock(offset_type startOffset, size32_t size)
 namespace EventRecorderInternal
 {
 EventRecorder eventRecorder;
+}
+
+//---------------------------------------------------------------------------------------------------------------------
+
+class CEventFileReader : public CInterface
+{
+private:
+    Owned<IBufferedSerialInputStream> stream;
+    Owned<IFile> file;
+    Linked<IEventVisitor> visitor;
+    unsigned version{0};
+    uint32_t options{0};
+    size32_t bytesRead{0};
+    bool mute{false};
+
+public:
+    bool traverse(const char* filename, IEventVisitor& _visitor)
+    {
+        file.setown(locateEventFile(filename));
+        stream.setown(openEventFileForReading(*file));
+        visitor.set(&_visitor);
+
+        readToken(version);
+        //MORE: Need to handle multiple file versions
+        if (version != currentVersion)
+            throw makeStringExceptionV(-1, "unsupported file version %u (required %u)", version, currentVersion);
+
+        return traverseHeader() && traverseEvents() && traverseFooter();
+    }
+
+private:
+    inline bool continuing(IEventVisitor::Continuation continuation) const
+    {
+        return (IEventVisitor::visitContinue == continuation);
+    }
+
+    bool traverseHeader()
+    {
+        uint64_t startTimestamp;
+        uint64_t fileSize = file->size();
+
+        readToken(options);
+        readToken(startTimestamp);
+        return (visitor->visitFile(file->queryFilename(), version) &&
+            continuing(visitor->visitAttribute(EvAttrRecordedFileSize, fileSize)) &&
+            continuing(visitor->visitAttribute(EvAttrRecordedTimestamp, startTimestamp)) &&
+            // Pass through information about which of the extra options are provided on each of the event records
+            (!(options & ERFtraceid) || continuing(visitor->visitAttribute(EvAttrRecordedOption, "traceid"))) &&
+            (!(options & ERFthreadid) || continuing(visitor->visitAttribute(EvAttrRecordedOption, "threadid"))) &&
+            (!(options & ERFstacktrace) || continuing(visitor->visitAttribute(EvAttrRecordedOption, "stack"))));
+    }
+
+    bool traverseEvents()
+    {
+        for (;;)
+        {
+            // no more data means no more events
+            size32_t got = 0;
+            stream->peek(1, got);
+            if (!got)
+                break;
+
+            EventType eventType;
+            readToken(eventType);
+            if (eventType >= EventMax)
+                throw makeStringExceptionV(-1, "invalid event type %u", eventType);
+            if (!reactToVisit(visitor->visitEvent(eventInformation[eventType].type)))
+                return false;
+
+            if ((EventNone != eventType) && !traverseAttributes())
+                return false;
+        }
+        return true;
+    }
+
+    bool traverseAttributes()
+    {
+        if (!finishAttribute<uint64_t>(EvAttrEventTimeOffset))
+            return false;
+        if ((options & ERFtraceid) && !finishDataAttribute(EvAttrEventTraceId, 16))
+            return false;
+        if ((options & ERFthreadid) && !finishAttribute<uint64_t>(EvAttrEventThreadId))
+            return false;
+        for (;;)
+        {
+            EventAttr attr;
+            readToken(attr);
+            if (EvAttrNone == attr)
+                return finishEvent();
+            if (attr >= EvAttrMax)
+                throw makeStringExceptionV(-1, "invalid attribute type %u", attr);
+            switch (attrInformation[attr].type)
+            {
+            case EATnone:
+                throw makeStringExceptionV(-1, "no data type for attribute %u", attr);
+                break;
+            case EATbool:
+                if (!finishAttribute<bool>(attr))
+                    return false;
+                break;
+            case EATu1:
+                if (!finishAttribute<uint8_t>(attr))
+                    return false;
+                break;
+            case EATu2:
+                if (!finishAttribute<uint16_t>(attr))
+                    return false;
+                break;
+            case EATu4:
+                if (!finishAttribute<uint32_t>(attr))
+                    return false;
+                break;
+            case EATu8:
+            case EATtimestamp:
+                if (!finishAttribute<uint64_t>(attr))
+                    return false;
+                break;
+            case EATstring:
+                if (!finishAttribute(attr))
+                    return false;
+                break;
+            case EATtraceid:
+                if (!finishAttribute(attr, 32))
+                    return false;
+                break;
+            }
+        }
+        return true;
+    }
+
+    bool traverseFooter()
+    {
+        (void)visitor->departFile(bytesRead);
+        return true;
+    }
+
+    bool finishEvent()
+    {
+        bool result = true;
+        if (!mute)
+            result = visitor->departEvent();
+        else
+            mute = false; // reset for next event
+        return result;
+    }
+
+    template <typename T>
+    bool finishAttribute(EventAttr attr)
+    {
+        T value;
+        readToken(value);
+        if (mute)
+            return true;
+        return reactToVisit(visitor->visitAttribute(attr, value));
+    }
+
+    bool finishAttribute(EventAttr attr)
+    {
+        StringBuffer value;
+        readToken(value);
+        if (mute)
+            return true;
+        return reactToVisit(visitor->visitAttribute(attr, value.str()));
+    }
+
+    bool finishAttribute(EventAttr attr, size32_t len)
+    {
+        StringBuffer value;
+        readToken(value, len);
+        if (mute)
+            return true;
+        return reactToVisit(visitor->visitAttribute(attr, value.str()));
+    }
+
+    //Read as data, but pass through as a hex encoded string
+    bool finishDataAttribute(EventAttr attr, size32_t len)
+    {
+        MemoryAttr buffer(len);
+        if (stream->read(len, buffer.mem()) != len)
+            throw makeStringExceptionV(-1, "eof before end of %u byte string", len);
+        bytesRead += len;
+
+        if (mute)
+            return true;
+
+        StringBuffer hexText;
+        hexText.ensureCapacity(len*2);
+        for (unsigned i=0; i < len; i++)
+            hexText.appendhex(buffer.getByte(i), true);
+        return reactToVisit(visitor->visitAttribute(attr, hexText.str()));
+    }
+
+    bool reactToVisit(IEventVisitor::Continuation result)
+    {
+        switch (result)
+        {
+        case IEventVisitor::visitContinue:
+            break;
+        case IEventVisitor::visitSkipEvent:
+            mute = true;
+            break;
+        case IEventVisitor::visitSkipFile:
+            return false;
+        }
+        return true;
+    }
+
+    //Read a strongly typed value from a buffered stream.
+    template<typename T>
+    T readToken(T& token)
+    {
+        if (stream->read(sizeof(token), &token) != sizeof(token))
+            throw makeStringException(-1, "unexpected eof");
+        bytesRead += sizeof(token);
+        return token;
+    }
+
+    //Read a fixed length, unterminated, string from a buffered stream.
+    StringBuffer& readToken(StringBuffer& token, size32_t len)
+    {
+        assertex(len);
+        token.setLength(len);
+        if (stream->read(len, const_cast<char*>(token.str())) != len)
+            throw makeStringExceptionV(-1, "eof before end of %u byte string", len);
+        bytesRead += len;
+        return token;
+    }
+
+    //Read a NULL terminated string from a buffered stream.
+    StringBuffer& readToken(StringBuffer& token)
+    {
+        size32_t got = 0;
+        for (;;) {
+            const char *s = (const char*)stream->peek(1,got);
+            if (!s)
+                throw makeStringExceptionV(-1, "eof before end of NULL terminated string");
+            const char *p = s;
+            const char *e = p + got;
+            while (p != e)
+            {
+                if (!*p)
+                {
+                    token.append(p - s, s);
+                    stream->skip(p - s + 1);
+                    bytesRead += token.length() + 1;
+                    return token;
+                }
+                p++;
+            }
+            token.append(got, s);
+            stream->skip(got);
+        }
+        return token;
+    }
+
+    IFile* locateEventFile(const char* filename)
+    {
+        if (isEmptyString(filename))
+            return nullptr;
+        const char * path = filename;
+    #if 0
+        StringBuffer outputFilename;
+        if (!isAbsolutePath(filename))
+        {
+            getTempFilePath(outputFilename, "eventrecorder", nullptr);
+            outputFilename.append(PATHSEPCHAR).append(filename);
+            path = outputFilename.str();
+        }
+    #endif
+        Owned<IFile> file = createIFile(path);
+        if (!file || !file->exists())
+            throw makeStringExceptionV(-1, "file '%s' not found", path);
+        return file.getClear();
+    }
+
+    IBufferedSerialInputStream* openEventFileForReading(IFile& file)
+    {
+        Owned<IFileIO> fileIO = file.open(IFOread);
+        if (!fileIO)
+            throw makeStringExceptionV(-1, "file '%s' not opened for reading", file.queryFilename());
+        Owned<ISerialInputStream> baseStream = createSerialInputStream(fileIO);
+        Owned<IBufferedSerialInputStream> bufferedStream = createBufferedInputStream(baseStream, 0x100000, false);
+        return bufferedStream.getClear();
+    }
+};
+
+bool readEvents(const char* filename, IEventVisitor& visitor)
+{
+    CEventFileReader reader;
+    return reader.traverse(filename, visitor);
+}
+
+class jlib_decl CDumpVisitsEventVisitor : public CInterfaceOf<IEventVisitor>
+{
+public:
+    virtual bool visitFile(const char* filename, uint32_t version) override
+    {
+        *out << "name: " << filename << std::endl;
+        *out << "version: " << version << std::endl;
+        return true;
+    }
+    virtual Continuation visitEvent(EventType id) override
+    {
+        *out << "event: " << queryEventName(id) << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, const char * value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = '" << value << "'" << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, bool value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = " << (value ? "true" : "false") << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, uint8_t value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = " << (unsigned)value << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, uint16_t value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = " << (unsigned)value << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, uint32_t value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = " << value << std::endl;
+        return visitContinue;
+    }
+    virtual Continuation visitAttribute(EventAttr id, uint64_t value) override
+    {
+        *out << "attribute: " << queryEventAttributeName(id) << " = " << value << std::endl;
+        return visitContinue;
+    }
+    virtual bool departEvent() override
+    {
+        *out << "departEvent" << std::endl;
+        return true;
+    }
+    virtual void departFile(uint32_t bytesRead) override
+    {
+        *out << "bytesRead: " << bytesRead << std::endl;
+    }
+protected:
+    std::ostream* out = &std::cout;
+public:
+    CDumpVisitsEventVisitor() {}
+    // An alternate stream may be substituted for testing.
+    CDumpVisitsEventVisitor(std::ostream& _out) : out(&_out) {}
+};
+
+IEventVisitor* createVisitTrackingEventVisitor()
+{
+    return new CDumpVisitsEventVisitor(std::cout);
+}
+
+IEventVisitor* createVisitTrackingEventVisitor(std::ostream& out)
+{
+    return new CDumpVisitsEventVisitor(out);
 }
 
 // GH->TK

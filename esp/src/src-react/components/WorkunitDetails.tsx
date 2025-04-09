@@ -137,30 +137,37 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
         }, {
             id: "outputs",
             label: nlsHPCC.Outputs,
+            disabled: workunit?.Archived,
             count: workunit?.ResultCount
         }, {
             id: "inputs",
             label: nlsHPCC.Inputs,
+            disabled: workunit?.Archived,
             count: workunit?.SourceFileCount
         }, {
             id: "metrics",
             label: nlsHPCC.Metrics,
+            disabled: workunit?.Archived,
             count: workunit?.GraphCount
         }, {
             id: "workflows",
             label: nlsHPCC.Workflows,
+            disabled: workunit?.Archived,
             count: workunit?.WorkflowCount
         }, {
             id: "queries",
+            label: nlsHPCC.Queries,
             icon: <Icon iconName="Search"></Icon>,
-            label: nlsHPCC.Queries
+            disabled: workunit?.Archived,
         }, {
             id: "resources",
             label: nlsHPCC.Resources,
+            disabled: workunit?.Archived,
             count: workunit?.ResourceURLCount
         }, {
             id: "helpers",
             label: nlsHPCC.Helpers,
+            disabled: workunit?.Archived,
             count: workunit?.HelpersCount
         }, {
             id: "logs",
@@ -175,7 +182,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
             id: "xml",
             label: nlsHPCC.XML
         }];
-    }, [logCount, logsEnabled, logsStatusMessage, workunit?.ApplicationValueCount, workunit?.DebugValueCount, workunit?.GraphCount, workunit?.HelpersCount, workunit?.ResourceURLCount, workunit?.ResultCount, workunit?.SourceFileCount, workunit?.VariableCount, workunit?.WorkflowCount, wuid]);
+    }, [logCount, logsEnabled, logsStatusMessage, workunit?.Archived, workunit?.ApplicationValueCount, workunit?.DebugValueCount, workunit?.GraphCount, workunit?.HelpersCount, workunit?.ResourceURLCount, workunit?.ResultCount, workunit?.SourceFileCount, workunit?.VariableCount, workunit?.WorkflowCount, wuid]);
 
     return <FullscreenFrame fullscreen={fullscreen}>
         <SizeMe monitorHeight>{({ size }) =>
@@ -191,7 +198,7 @@ export const WorkunitDetails: React.FunctionComponent<WorkunitDetailsProps> = ({
                 </DelayLoadedPanel>
                 <DelayLoadedPanel visible={tab === "outputs"} size={size}>
                     {state?.outputs ?
-                        queryParams.outputs?.hasOwnProperty("__legacy") ? <IFrame src={`/ WsWorkunits / WUResult ? Wuid = ${wuid} & ResultName= ${state?.outputs}`} height="99%" /> :
+                        queryParams.outputs?.hasOwnProperty("__legacy") ? <IFrame src={`/WsWorkunits/WUResult?Wuid=${wuid}&ResultName=${state?.outputs}`} height="99%" /> :
                             queryParams.outputs?.hasOwnProperty("__visualize") ? <DojoAdapter widgetClassID="VizWidget" params={{ Wuid: wuid, Sequence: state?.outputs }} /> :
                                 <Result wuid={wuid} resultName={state?.outputs} filter={queryParams.outputs} /> :
                         <Results wuid={wuid} />

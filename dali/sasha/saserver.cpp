@@ -418,6 +418,10 @@ int main(int argc, const char* argv[])
             Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
             initClientProcess(serverGroup, DCR_SashaServer, port, nullptr, nullptr, MP_WAIT_FOREVER, true);
         }
+        else
+        {
+            PROGLOG("Not connecting to DALISERVERS as no access/dali in config");
+        }
 
         if (stop)
             stopSashaServer((argc>2)?argv[2]:"", DEFAULT_SASHA_PORT);
@@ -552,6 +556,10 @@ int main(int argc, const char* argv[])
         {
             closeDllServer();
             closedownClientProcess();
+        }
+        else
+        {
+            PROGLOG("Not closeDllServer() nor closedownClientProcess() as no access/dali in config");
         }
     }
     catch (IException *) {  // dali may be down

@@ -1933,15 +1933,6 @@ public:
         return useContext(sequence).getPropBool(name);
     }
 
-    static unsigned hex2digit(char c)
-    {
-        // MORE - what about error cases?
-        if (c >= 'a')
-            return (c - 'a' + 10);
-        else if (c >= 'A')
-            return (c - 'A' + 10);
-        return (c - '0');
-    }
     virtual void getResultData(unsigned & tlen, void * & tgt, const char * name, unsigned sequence)
     {
         MemoryBuffer result;
@@ -3079,6 +3070,10 @@ public:
     {
         Owned<IRoxieDaliHelper> dali = ::connectToDali();
         return dali != nullptr;
+    }
+    virtual bool allowSashaAccess() const
+    {
+        return nullptr != workUnit; // allow if dynamic query only
     }
     virtual StringBuffer &getQueryId(StringBuffer &result, bool isShared) const
     {

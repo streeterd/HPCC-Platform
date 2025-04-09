@@ -52,6 +52,7 @@ public:
     inline bool     isEmpty() const                     { return (curLen == 0); }
     void            setLength(size_t len);
     inline void     ensureCapacity(size_t max)        { if (maxLen <= curLen + max) _realloc(curLen + max); }
+    char *          ensureCapacity(size_t max, size_t & got); // ensure there is space, but do not increase curLen
     size32_t        lengthUtf8() const;
 
     StringBuffer &  append(char value);
@@ -78,7 +79,7 @@ public:
     StringBuffer &  setf(const char* format, ...) __attribute__((format(printf,2,3)));
     StringBuffer &  limited_valist_appendf(size_t szLimit, const char *format, va_list args) __attribute__((format(printf,3,0)));
     inline StringBuffer &valist_appendf(const char *format, va_list args) __attribute__((format(printf,2,0))) { return limited_valist_appendf(0, format, args); }
-    StringBuffer &  appendhex(unsigned char value, char lower);
+    StringBuffer &  appendhex(unsigned char value, bool lower);
     inline char     charAt(size_t pos) { return buffer[pos]; }
     inline StringBuffer & clear() { curLen = 0; return *this; }
     void            kill();
@@ -98,6 +99,7 @@ public:
     StringBuffer &  insert(size_t offset, const IStringVal * value);
     StringBuffer &  reverse();
     void            setCharAt(size_t offset, char value);
+    void            replace(size_t offset, size_t len, const void * value);
 
     //Non-standard functions:
     MemoryBuffer &  deserialize(MemoryBuffer & in);
@@ -124,6 +126,7 @@ public:
     char *          reserve(size_t size);
     char *          reserveTruncate(size_t size);
     void            setown(StringBuffer &other);
+    size_t          space() const { return maxLen - curLen - 1; }
     StringBuffer &  stripChar(char oldChar);
     void            swapWith(StringBuffer &other);
     void setBuffer(size_t buffLen, char * newBuff, size_t strLen);
@@ -646,6 +649,22 @@ void processLines(const StringBuffer & content, LineProcessor process)
         }
     }
 }
+
+//Convert a character to the underlying value - out of range values are undefined
+inline unsigned hex2digit(char c)
+{
+    if (c >= 'a')
+        return (c - 'a' + 10);
+    else if (c >= 'A')
+        return (c - 'A' + 10);
+    return (c - '0');
+}
+
+inline byte getHexPair(const char * s)
+{
+    return hex2digit(s[0]) << 4 | hex2digit(s[1]);
+}
+
 
 //General purpose function for processing option strings in the form option[=value],option[=value],...
 using optionCallback = std::function<void(const char * name, const char * value)>;

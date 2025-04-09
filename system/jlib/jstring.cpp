@@ -517,6 +517,14 @@ void StringBuffer::setLength(size_t len)
     curLen = len;
 }
 
+char * StringBuffer::ensureCapacity(size_t max, size_t & got)
+{
+    if (maxLen <= curLen + max)
+        _realloc(curLen + max);
+    got = maxLen - curLen - 1;
+    return buffer + curLen;
+}
+
 size32_t StringBuffer::lengthUtf8() const
 {
     size_t chars = 0;
@@ -894,6 +902,15 @@ void StringBuffer::setCharAt(size_t offset, char value)
         buffer[offset] = value;
 }
 
+void StringBuffer::replace(size_t offset, size_t len, const void * value)
+{
+    if ((offset >= curLen) || (len == 0))
+        return;
+    if (offset + len > curLen)
+        len = curLen - offset;
+    memcpy(buffer + offset, value, len);
+}
+
 StringBuffer & StringBuffer::toLowerCase()
 {
     size_t l = curLen;
@@ -1066,10 +1083,45 @@ StringBuffer & StringBuffer::replaceString(const char* oldStr, const char* newSt
         if (oldlen > curLen)
             return *this;
 
-        StringBuffer temp;
         size_t newlen = newStr ? strlen(newStr) : 0;
-        if (::replaceString(temp, curLen, buffer, oldlen, oldStr, newlen, newStr, true))
-            swapWith(temp);
+        // If target string (newStr) is shorter than or equal to search string, do an in-place replacement to avoid allocation
+        if (oldlen >= newlen)
+        {
+            size_t maxOffset = curLen - oldlen;
+            size_t offset = 0;
+            size_t targetOffset = 0;
+            size_t lastCopied = 0;
+            char firstChar = oldStr[0];
+            while (offset <= maxOffset)
+            {
+                if (unlikely(buffer[offset] == firstChar)
+                    && unlikely((oldlen == 1) || memcmp(buffer + offset, oldStr, oldlen)==0))
+                {
+                    if (lastCopied != targetOffset && likely(lastCopied != offset))
+                        memcpy(buffer + targetOffset, buffer + lastCopied, offset - lastCopied);
+                    targetOffset += offset - lastCopied;
+                    memcpy(buffer + targetOffset, newStr, newlen);
+                    offset += oldlen;
+                    targetOffset += newlen;
+                    lastCopied = offset;
+                }
+                else
+                    offset++;
+            }
+            // Copy remaining characters if in-place replacements were made
+            if (lastCopied)
+            {
+                if (lastCopied != targetOffset && lastCopied != curLen)
+                    memcpy(buffer + targetOffset, buffer + lastCopied, curLen - lastCopied);
+                setLength(targetOffset + (curLen - lastCopied));
+            }
+        }
+        else
+        {
+            StringBuffer temp;
+            if (::replaceString(temp, curLen, buffer, oldlen, oldStr, newlen, newStr, true))
+                swapWith(temp);
+        }
     }
     return *this;
 }
@@ -1535,7 +1587,7 @@ StringAttrItem::StringAttrItem(const char *_text, unsigned _len)
 }
 
 
-inline char hex(char c, char lower)
+inline char hex(char c, bool lower)
 {
   if (c < 10)
     return '0' + c;
@@ -1545,7 +1597,7 @@ inline char hex(char c, char lower)
     return 'A' + c - 10;
 }
 
-StringBuffer &  StringBuffer::appendhex(unsigned char c, char lower)
+StringBuffer &  StringBuffer::appendhex(unsigned char c, bool lower)
 {
     append(hex(c>>4, lower));
     append(hex(c&0xF, lower));
@@ -2914,7 +2966,7 @@ void processOptionString(const char * options, optionCallback callback)
             if (end)
                 option.append(end-start, start);
             else
-                option.append(options);
+                option.append(start);
         }
 
         if (option.length())

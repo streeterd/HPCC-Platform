@@ -18,9 +18,13 @@
 #ifndef JEVENT_HPP
 #define JEVENT_HPP
 
+#include <ostream>
+
 #include "jscm.hpp"
 #include "jatomic.hpp"
 #include "jbuff.hpp"
+#include "jstring.hpp"
+#include "jstats.h"
 
 // The order should not be changed, or items removed. New values should always be appended before EventMax
 // The meta prefix is used when there are records that provide extra meta data to help interpret
@@ -31,11 +35,17 @@ enum EventType : byte
     EventIndexLookup,
     EventIndexLoad,
     EventIndexEviction,
+    EventDaliChangeMode,
+    EventDaliCommit,
     EventDaliConnect,
-    EventDaliRead,
-    EventDaliWrite,
-    EventDaliDisconnect,
+    EventDaliEnsureLocal,
+    EventDaliGet,
+    EventDaliGetChildren,
+    EventDaliGetChildrenFor,
+    EventDaliGetElements,
+    EventDaliSubscribe,
     MetaFileInformation,          // information about a file
+    EventRecordingActive,         // optional event to indicate that recording was suspended/re-enabled
     EventMax
 };
 
@@ -53,11 +63,27 @@ enum EventAttr : byte
     EvAttrInCache,
     EvAttrPath,
     EvAttrConnectId,
+    EvAttrEnabled,
+    EvAttrRecordedFileSize,
+    EvAttrRecordedTimestamp,
+    EvAttrRecordedOption,
+    EvAttrEventTimeOffset,
+    EvAttrEventTraceId,
+    EvAttrEventThreadId,
+    EvAttrEventStackTrace,
+    EvAttrDataSize,
     EvAttrMax
 };
 
 extern jlib_decl const char * queryEventName(EventType event);
 extern jlib_decl const char * queryEventAttributeName(EventAttr attr);
+
+struct jlib_decl EventRecordingSummary
+{
+    unsigned numEvents{0};
+    offset_t totalSize{0};
+    StringBuffer filename;
+};
 
 //---------------------------------------------------------------------------------------------------------------------
 enum EventType : byte;
@@ -80,22 +106,36 @@ class jlib_decl EventRecorder
 public:
     EventRecorder();
 
-    bool isActive() const { return recordingEvents.load(std::memory_order_acquire); }
+    bool isRecording() const { return recordingEvents.load(std::memory_order_acquire); }    // Are events being recorded? false if recording is paused
 
-    void startRecording(const char * optionsText, const char * filename);
-    void stopRecording();
+    bool startRecording(const char * optionsText, const char * filename, bool pause);
+    bool stopRecording(EventRecordingSummary * optSummary);
+    bool pauseRecording(bool pause, bool recordChange);
 
 //Functions for each of the events that can be recorded..
     void recordIndexLookup(unsigned fileid, offset_t offset, byte nodeKind, bool hit);
     void recordIndexLoad(unsigned fileid, offset_t offset, byte nodeKind, size32_t size, __uint64 elapsedTime, __uint64 readTime);
     void recordIndexEviction(unsigned fileid, offset_t offset, byte nodeKind, size32_t size);
 
-    void recordDaliConnect(const char * path, __uint64 id);
-    void recordDaliDisconnect(__uint64 id);
+    void recordDaliChangeMode(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliCommit(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliConnect(const char * xpath, __int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliEnsureLocal(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliGet(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliGetChildren(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliGetChildrenFor(__int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliGetElements(const char * path, __int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliSubscribe(const char * xpath, __int64 id, stat_type elapsedNs);
+
+    void recordFileInformation(unsigned fileid, const char * filename);
 
     //-------------------------- End of the public interface --------------------------
 
 protected:
+    void recordRecordingActive(bool paused);
+    void recordDaliEvent(EventType event, const char * xpath, __int64 id, stat_type elapsedNs, size32_t dataSize);
+    void recordDaliEvent(EventType event, __int64 id, stat_type elapsedNs, size32_t dataSize);
+
     void checkAttrValue(EventAttr attr, size_t size);
 
     void writeEventHeader(EventType type, offset_type & offset);
@@ -126,6 +166,7 @@ protected:
         writeData(offset, strlen(value)+1, value);
     }
 
+    void writeByte(offset_type & offset, byte value);
     void writeData(offset_type & offset, size_t size, const void * data);
 
     offset_type reserveEvent(size32_t size);
@@ -142,15 +183,20 @@ protected:
     static constexpr offset_t bufferMask = OutputBufferSize-1;
     static constexpr offset_t blockMask = OutputBlockSize-1;
 
-    std::atomic<bool> recordingEvents{false};
+    std::atomic<bool> recordingEvents{false};       // Are events being recorded? false if recording is paused.
+    std::atomic<bool> isStarted{false};             // Use 2 flags for whether started and stopped to ensure clean
+    std::atomic<bool> isStopped{true};              // termination in stopRecording()
     offset_type nextOffset{0};
     offset_type nextWriteOffset{0};
-    unsigned counts[numBlocks] = {0};
+    offset_type numEvents{0};
+    unsigned pendingEventCounts[numBlocks] = {0};
     cycle_t startCycles{0};
     MemoryAttr buffer;
     CriticalSection cs;
     unsigned sizeMessageHeaderFooter{0};
     unsigned options{0};
+    bool outputToLog{false};
+    StringBuffer outputFilename;
     Owned<IFileIO> output;
 };
 
@@ -164,6 +210,67 @@ extern jlib_decl EventRecorder eventRecorder;
 }
 
 inline EventRecorder & queryRecorder() { return EventRecorderInternal::eventRecorder; }
-inline bool recordingEvents() { return EventRecorderInternal::eventRecorder.isActive(); }
+inline bool recordingEvents() { return EventRecorderInternal::eventRecorder.isRecording(); }
+
+// Abstraction of the visitor pattern for "reading" binary event data files. The `readEvents`
+// function will pass each byte of data contained within a file throwgh exactly one method of
+// this interface.
+//
+// For each compatibile file the visitor can expect:
+// 1. One call to visitFile
+// 2. One call to visitAttribute for EvAttrRecordedFileSize
+// 3. One call to visitAttribute for EvAttrRecordedTimestamp
+// 4. Zero or more calls to visitAttribute for EvAttrRecordedOption
+// 5. Zero or more sequences of:
+//    a. One call to visitEvent
+//    b. Zero or more calls to visitAttribute
+//    c. One call to departEvent
+// 6. One call to departFile
+//
+// Implementations may implement limited filtering during visitation. All methods, except
+// `departFile`, may abort visitation. Both `visitEvent` and `visitAttribute` (in the context of
+// an event) may suppress visitation of the remainder of the current event.
+//
+// Reasons for aborting a file include:
+// - unrecognized file version; or
+// - (remaining) events out of a target date range; or
+// - trace IDs are required but are not present.
+//
+// Reasons for suppressing an event include:
+// - event type not required by current use case; or
+// - attribute value not out of range for current use case.
+interface IEventVisitor : extends IInterface
+{
+    enum Continuation {
+        visitContinue,
+        visitSkipEvent,
+        visitSkipFile
+    };
+    virtual bool visitFile(const char* filename, uint32_t version) = 0;
+    virtual Continuation visitEvent(EventType id) = 0;
+    virtual Continuation visitAttribute(EventAttr id, const char * value) = 0;
+    virtual Continuation visitAttribute(EventAttr id, bool value) = 0;
+    virtual Continuation visitAttribute(EventAttr id, uint8_t value) = 0;
+    virtual Continuation visitAttribute(EventAttr id, uint16_t value) = 0;
+    virtual Continuation visitAttribute(EventAttr id, uint32_t value) = 0;
+    virtual Continuation visitAttribute(EventAttr id, uint64_t value) = 0;
+    virtual bool departEvent() = 0;
+    virtual void departFile(uint32_t bytesRead) = 0;
+};
+
+// Return a new event visitor that writes to standard output for every visit.
+// `visitFile` adds two lines of text, and all other methods add one line of text.
+extern jlib_decl IEventVisitor* createVisitTrackingEventVisitor();
+
+// Return a new event visitor that writes to the given output stream for every visit.
+// `visitFile` adds two lines of text, and all other methods add one line of text.
+extern jlib_decl IEventVisitor* createVisitTrackingEventVisitor(std::ostream& out);
+
+// Opens and parses a single binary event data file. Parsed data is passed to the given visitor
+// until parsing completes or the visitor requests it to stop.
+//
+// Exceptions are thrown on error. False is returned if parsing was stopped prematurely. True is
+// returned if all data was parsed successfully.
+extern jlib_decl bool readEvents(const char* filename, IEventVisitor & visitor);
 
 #endif
