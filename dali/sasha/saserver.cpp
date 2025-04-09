@@ -56,7 +56,7 @@ static IArrayOf<ISashaServer> servers;
 static std::atomic<unsigned> StopSuspendCount{0};
 static bool stopped{false};
 static Semaphore stopSem;
-static bool isDaliClient{false};
+static bool isDaliClient{true};
 
 const char *sashaProgramName;
 
@@ -76,7 +76,7 @@ static void AddServers()
     servers.append(*createSashaXrefServer());
     servers.append(*createSashaDaFSMonitorServer());
     servers.append(*createSashaQMonitorServer());
-    servers.append(*createSashaFileExpiryServer()); 
+    servers.append(*createSashaFileExpiryServer());
     // add new servers here
 }
 #endif
@@ -132,7 +132,7 @@ void stopSashaServer(const char *eps,unsigned short port)
         ep.set(eps,port);
     else
         ep.setLocalHost(port);
-    
+
     Owned<INode> node = createINode(ep);
     IInterCommunicator & comm=queryWorldCommunicator();
     Owned<ISashaCommand> cmd = createSashaCommand();
@@ -142,7 +142,7 @@ void stopSashaServer(const char *eps,unsigned short port)
         return;
     }
     PROGLOG("Sasha Server being stopped");
-    cmd->send(node,1000*60);    
+    cmd->send(node,1000*60);
     while (queryWorldCommunicator().verifyConnection(node,500)) {
         PROGLOG("Waiting for Sasha Server to stop....");
         Sleep(2000);
@@ -178,9 +178,9 @@ public:
                 PROGLOG("Request to stop received");
             }
         }
-        else if (cmd->getAction()==SCA_GETVERSION) 
+        else if (cmd->getAction()==SCA_GETVERSION)
             cmd->addId(SASHAVERSION); // should be a result probably but keep bwd compatible
-        else 
+        else
         {
 #ifdef _CONTAINERIZED
                 if (strieq(service, "coalescer"))
@@ -197,12 +197,12 @@ public:
                         case SCA_ARCHIVE:
                         case SCA_BACKUP:
                         case SCA_RESTORE:
-                        case SCA_LIST: 
-                        case SCA_GET: 
-                        case SCA_WORKUNIT_SERVICES_GET: 
+                        case SCA_LIST:
+                        case SCA_GET:
+                        case SCA_WORKUNIT_SERVICES_GET:
                         case SCA_LISTDT:
                         {
-                            if (!processArchiverCommand(cmd)) 
+                            if (!processArchiverCommand(cmd))
                                 OWARNLOG("Command %d not handled",cmd->getAction());
                             break;
                         }
@@ -216,9 +216,9 @@ public:
                 suspendCoalescingServer();
             else if (cmd->getAction()==SCA_COALESCE_RESUME)
                 resumeCoalescingServer();
-            else if (cmd->getAction()==SCA_XREF) 
+            else if (cmd->getAction()==SCA_XREF)
                 processXRefRequest(cmd);
-            else if (!processArchiverCommand(cmd)) 
+            else if (!processArchiverCommand(cmd))
                 OWARNLOG("Command %d not handled",cmd->getAction());
 #endif
         }
@@ -228,12 +228,12 @@ public:
             cmd->reply();
     }
     virtual bool stop() override
-    { 
-        return true; 
+    {
+        return true;
     }
     virtual bool canReuse() const override
-    { 
-        return false; 
+    {
+        return false;
     }
 };
 
@@ -255,10 +255,10 @@ void SashaMain()
                 return false;
             }
         } abortHandler(stopped);
- 
+
         addAbortHandler(abortHandler);
         while (!stopped)
-        {            
+        {
         }
         return;
     }
@@ -354,7 +354,7 @@ int main(int argc, const char* argv[])
     try
     {
         serverConfig.setown(loadConfiguration(defaultYaml, argv, "sasha", "SASHA", "sashaconf.xml", nullptr));
-        isDaliClient = serverConfig->hasProp("[access='dali']");
+//        isDaliClient = serverConfig->hasProp("[access='dali']");
 
         Owned<IFile> sentinelFile;
 
@@ -418,7 +418,7 @@ int main(int argc, const char* argv[])
             Owned<IGroup> serverGroup = createIGroupRetry(daliServer.str(), DALI_SERVER_PORT);
             initClientProcess(serverGroup, DCR_SashaServer, port, nullptr, nullptr, MP_WAIT_FOREVER, true);
         }
-        
+
         if (stop)
             stopSashaServer((argc>2)?argv[2]:"", DEFAULT_SASHA_PORT);
         else
@@ -448,7 +448,7 @@ int main(int argc, const char* argv[])
                 /*
                  * NB: for the time being both wu-archiver and dfuwu-archive can handle
                  * requests for either standard workunits or dfuworkunits
-                 * 
+                 *
                  */
 
                 if (strieq(service, "coalescer"))
@@ -527,7 +527,7 @@ int main(int argc, const char* argv[])
             }
         }
     }
-    catch(IException *e){ 
+    catch(IException *e){
         EXCLOG(e, "Sasha Server Exception: ");
 #ifndef _CONTAINERIZED
         stopPerformanceMonitor();
@@ -562,4 +562,4 @@ int main(int argc, const char* argv[])
 }
 
 
-    
+
