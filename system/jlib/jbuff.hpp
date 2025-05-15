@@ -289,7 +289,6 @@ interface jlib_decl serializable : extends IInterface
 public:
     virtual void serialize(MemoryBuffer &tgt) = 0;
     virtual void deserialize(MemoryBuffer &src) = 0;
-    virtual void deserialize_StringAttr(MemoryBuffer &src) {};
 };
 
 class jlib_decl MemoryBuffer2IDataVal : implements IDataVal

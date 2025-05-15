@@ -633,7 +633,6 @@ public:
     ipt_flags queryFlags() const { return (ipt_flags) flags; }
     void serializeCutOff(MemoryBuffer &tgt, int cutoff=-1, int depth=0);
     void deserializeSelf(MemoryBuffer &src, DeserializeContext &deserializeContext);
-    void deserializeSelf_StringAttr(MemoryBuffer &src);
     void serializeAttributes(MemoryBuffer &tgt);
 
     void cloneIntoSelf(const IPropertyTree &srcTree, bool sub);     // clone the name and contents of srcTree into "this" tree
@@ -739,7 +738,6 @@ public:
 // serializable impl.
     virtual void serialize(MemoryBuffer &tgt) override;
     virtual void deserialize(MemoryBuffer &src) override;
-    virtual void deserialize_StringAttr(MemoryBuffer &src);
 
 
 protected:

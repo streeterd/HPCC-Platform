@@ -3035,55 +3035,6 @@ void PTree::serialize(MemoryBuffer &tgt)
     serializeCutOff(tgt, -1, 0);
 }
 
-void PTree::deserialize_StringAttr(MemoryBuffer &src)
-{
-    deserializeSelf_StringAttr(src);
-
-    StringAttr eName;
-    for (;;)
-    {
-        size32_t pos = src.getPos();
-        src.read(eName);
-        if (eName.isEmpty())
-            break;
-        src.reset(pos); // reset to re-read tree name
-        IPropertyTree *child = create(src);
-        addPropTree(eName, child);
-    }
-}
-
-void PTree::deserializeSelf_StringAttr(MemoryBuffer &src)
-{
-    setName(NULL);  // needs to be cleared before flags changed
-    StringAttr _name;
-    src.read(_name);
-    src.read(flags);
-    if (_name[0]==0)
-        setName(NULL);
-    else
-        setName(_name);
-    StringAttr attrName, attrValue;
-    for (;;)
-    {
-        src.read(attrName);
-        if (attrName.isEmpty())
-            break;
-        src.read(attrValue);
-        setProp(attrName, attrValue);
-    }
-
-    size32_t size;
-    unsigned pos = src.getPos();
-    src.read(size);
-    if (value) delete value;
-    if (size)
-    {
-        src.reset(pos);
-        value = new CPTValue(src);
-    }
-    else value = NULL;
-}
-
 void PTree::deserialize(MemoryBuffer &src)
 {
     DeserializeContext deserializeContext;
@@ -10467,6 +10418,10 @@ class PTreeDeserializeTimingTest : public CppUnit::TestFixture
     CPPUNIT_TEST(testSmallTreeDeserialize);
     CPPUNIT_TEST(testMediumTreeDeserialize);
     CPPUNIT_TEST(testLargeTreeDeserialize);
+    CPPUNIT_TEST(testExtraLargeTreeDeserialize);
+    CPPUNIT_TEST(testHugeTreeDeserialize);
+    CPPUNIT_TEST(testReallyHugeTreeDeserialize);
+    CPPUNIT_TEST(testMassiveTreeDeserialize);
     CPPUNIT_TEST(testDeepVsWideTreeDeserialize);
     CPPUNIT_TEST_SUITE_END();
 
@@ -10538,7 +10493,7 @@ public:
         return tree.getClear();
     }
 
-    void testDeserializePerformance(const char *description, unsigned numNodes, unsigned depth, bool binary, unsigned iterations, bool stringAttr)
+    void testDeserializePerformance(const char *description, unsigned numNodes, unsigned depth, bool binary, unsigned iterations)
     {
         // Create and serialize tree
         Owned<IPropertyTree> originalTree = createTree(numNodes, depth, binary);
@@ -10556,10 +10511,7 @@ public:
             timer.reset();
 
             Owned<IPropertyTree> deserializedTree = createPTree();
-            if (stringAttr)
-                deserializedTree->deserialize_StringAttr(serialized);
-            else
-                deserializedTree->deserialize(serialized);
+            deserializedTree->deserialize(serialized);
 
             cycle_t elapsed = timer.elapsedCycles();
             totalCycles += elapsed;
@@ -10576,32 +10528,61 @@ public:
         }
 
         // Calculate and report results
+        StringBuffer formattedResult_numNodes;
+        StringBuffer formattedResult_depth;
+        StringBuffer formattedResult_iterations;
+        StringBuffer formattedResult_serializedLength;
         double runTimeSecs = cycle_to_millisec(totalCycles) / 1000.0;
-        DBGLOG("Test %s: %u nodes, depth %u, %s content, %u iterations, StringAttr %s\tTree size: %u bytes serialized\tresults: %.2f s runtime", description, numNodes, depth, binary ? "binary" : "text", iterations, boolToStr(stringAttr), serialized.length(), runTimeSecs);
+        DBGLOG("Test %s: nodes %s; depth %s; content: %s; iterations: %s\tDeserialized: %s bytes\tRuntime: %.2f s",
+               description,
+               formatWithCommas(numNodes, formattedResult_numNodes).str(),
+               formatWithCommas(depth, formattedResult_depth).str(),
+               binary ? "binary" : "text",
+               formatWithCommas(iterations, formattedResult_iterations).str(),
+               formatWithCommas(serialized.length(), formattedResult_serializedLength).str(),
+               runTimeSecs);
     }
 
     void testSmallTreeDeserialize()
     {
-        testDeserializePerformance("Small Tree (wide)", 100, 1, false, 100000, true);
-        testDeserializePerformance("Small Tree (wide)", 100, 1, false, 100000, false);
-        testDeserializePerformance("Small Tree (deep)", 100, 10, false, 100000, true);
-        testDeserializePerformance("Small Tree (deep)", 100, 10, false, 100000, false);
+        testDeserializePerformance("Small Tree (wide)", 100, 1, false, 100);
+        testDeserializePerformance("Small Tree (deep)", 100, 20, false, 100);
     }
 
     void testMediumTreeDeserialize()
     {
-        testDeserializePerformance("Medium Tree (wide)", 1000, 1, false, 10000, true);
-        testDeserializePerformance("Medium Tree (wide)", 1000, 1, false, 10000, false);
-        testDeserializePerformance("Medium Tree (deep)", 1000, 20, false, 10000, true);
-        testDeserializePerformance("Medium Tree (deep)", 1000, 20, false, 10000, false);
+        testDeserializePerformance("Medium Tree (wide)", 1000, 1, false, 100);
+        testDeserializePerformance("Medium Tree (deep)", 1000, 20, false, 100);
     }
 
     void testLargeTreeDeserialize()
     {
-        testDeserializePerformance("Large Tree (wide)", 10000, 1, false, 1000, true);
-        testDeserializePerformance("Large Tree (wide)", 10000, 1, false, 1000, false);
-        testDeserializePerformance("Large Tree with binary (wide)", 10000, 1, true, 100, true);
-        testDeserializePerformance("Large Tree with binary (wide)", 10000, 1, true, 100, false);
+        testDeserializePerformance("Large Tree (wide)", 10000, 1, false, 100);
+        testDeserializePerformance("Large Tree with binary (wide)", 10000, 1, true, 100);
+    }
+
+    void testExtraLargeTreeDeserialize()
+    {
+        testDeserializePerformance("Extra Large Tree (wide)", 100000, 1, false, 50);
+        testDeserializePerformance("Extra Large Tree with binary (wide)", 100000, 1, true, 50);
+    }
+
+    void testHugeTreeDeserialize()
+    {
+        testDeserializePerformance("Huge Tree (wide)", 1000000, 1, false, 5);
+        testDeserializePerformance("Huge Tree with binary (wide)", 1000000, 1, true, 5);
+    }
+
+    void testReallyHugeTreeDeserialize()
+    {
+        testDeserializePerformance("Really Huge Tree (wide)", 10000000, 1, false, 1);
+        testDeserializePerformance("Really Huge Tree with binary (wide)", 10000000, 1, true, 1);
+    }
+
+    void testMassiveTreeDeserialize()
+    {
+        testDeserializePerformance("Massive Tree (wide)", 10000000, 1, false, 1);
+        testDeserializePerformance("Massive Tree with binary (wide)", 10000000, 1, true, 1);
     }
 
     void testDeepVsWideTreeDeserialize()
@@ -10609,12 +10590,9 @@ public:
         // Compare trees with same node count but different structures
         unsigned nodeCount = 5000;
 
-        testDeserializePerformance("Deep Tree", nodeCount, 500, false, 1000, true);
-        testDeserializePerformance("Deep Tree", nodeCount, 500, false, 1000, false);
-        testDeserializePerformance("Wide Tree", nodeCount, 1, false, 1000, true);
-        testDeserializePerformance("Wide Tree", nodeCount, 1, false, 1000, false);
-        testDeserializePerformance("Balanced Tree", nodeCount, (unsigned)sqrt(nodeCount), false, 1000, true);
-        testDeserializePerformance("Balanced Tree", nodeCount, (unsigned)sqrt(nodeCount), false, 1000, false);
+        testDeserializePerformance("Deep Tree", nodeCount, 500, false, 100);
+        testDeserializePerformance("Wide Tree", nodeCount, 1, false, 100);
+        testDeserializePerformance("Balanced Tree", nodeCount, (unsigned)sqrt(nodeCount), false, 100);
     }
 };
 
