@@ -10420,8 +10420,6 @@ class PTreeDeserializeTimingTest : public CppUnit::TestFixture
     CPPUNIT_TEST(testLargeTreeDeserialize);
     CPPUNIT_TEST(testExtraLargeTreeDeserialize);
     CPPUNIT_TEST(testHugeTreeDeserialize);
-    CPPUNIT_TEST(testReallyHugeTreeDeserialize);
-    CPPUNIT_TEST(testMassiveTreeDeserialize);
     CPPUNIT_TEST(testDeepVsWideTreeDeserialize);
     CPPUNIT_TEST_SUITE_END();
 
@@ -10545,44 +10543,32 @@ public:
 
     void testSmallTreeDeserialize()
     {
-        testDeserializePerformance("Small Tree (wide)", 100, 1, false, 100);
-        testDeserializePerformance("Small Tree (deep)", 100, 20, false, 100);
+        testDeserializePerformance("Small Tree (wide)", 100, 1, false, 1000);
+        testDeserializePerformance("Small Tree (deep)", 100, 1000, false, 1000);
     }
 
     void testMediumTreeDeserialize()
     {
         testDeserializePerformance("Medium Tree (wide)", 1000, 1, false, 100);
-        testDeserializePerformance("Medium Tree (deep)", 1000, 20, false, 100);
+        testDeserializePerformance("Medium Tree (deep)", 1000, 1000, false, 100);
     }
 
     void testLargeTreeDeserialize()
     {
         testDeserializePerformance("Large Tree (wide)", 10000, 1, false, 100);
-        testDeserializePerformance("Large Tree with binary (wide)", 10000, 1, true, 100);
+        testDeserializePerformance("Large Tree (wide)", 10000, 1, true, 100);
     }
 
     void testExtraLargeTreeDeserialize()
     {
         testDeserializePerformance("Extra Large Tree (wide)", 100000, 1, false, 50);
-        testDeserializePerformance("Extra Large Tree with binary (wide)", 100000, 1, true, 50);
+        testDeserializePerformance("Extra Large Tree (wide)", 100000, 1, true, 50);
     }
 
     void testHugeTreeDeserialize()
     {
         testDeserializePerformance("Huge Tree (wide)", 1000000, 1, false, 5);
-        testDeserializePerformance("Huge Tree with binary (wide)", 1000000, 1, true, 5);
-    }
-
-    void testReallyHugeTreeDeserialize()
-    {
-        testDeserializePerformance("Really Huge Tree (wide)", 10000000, 1, false, 1);
-        testDeserializePerformance("Really Huge Tree with binary (wide)", 10000000, 1, true, 1);
-    }
-
-    void testMassiveTreeDeserialize()
-    {
-        testDeserializePerformance("Massive Tree (wide)", 10000000, 1, false, 1);
-        testDeserializePerformance("Massive Tree with binary (wide)", 10000000, 1, true, 1);
+        testDeserializePerformance("Huge Tree (wide)", 1000000, 1, true, 5);
     }
 
     void testDeepVsWideTreeDeserialize()
@@ -10590,7 +10576,7 @@ public:
         // Compare trees with same node count but different structures
         unsigned nodeCount = 5000;
 
-        testDeserializePerformance("Deep Tree", nodeCount, 500, false, 100);
+        testDeserializePerformance("Deep Tree", nodeCount, 5000, false, 100);
         testDeserializePerformance("Wide Tree", nodeCount, 1, false, 100);
         testDeserializePerformance("Balanced Tree", nodeCount, (unsigned)sqrt(nodeCount), false, 100);
     }

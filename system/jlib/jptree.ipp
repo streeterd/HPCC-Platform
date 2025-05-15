@@ -604,7 +604,6 @@ struct DeserializeContext
 };
 
 
-
 class jlib_decl PTree : public CInterfaceOf<IPropertyTree>
 {
 friend class SingleIdIterator;
