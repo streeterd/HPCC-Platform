@@ -35,6 +35,7 @@ interface IScheduleEventPusher : public IInterface
 interface IScheduleEventProcessor : public IInterface
 {
     virtual void start() = 0;
+    virtual bool isRunning() const = 0;
     virtual void stop() = 0;
 };
 
