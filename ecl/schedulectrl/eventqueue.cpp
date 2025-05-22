@@ -71,10 +71,8 @@ public:
         channel.setown(qconn->open(queueName.str()));
         PROGLOG("Scheduler[%s]: listening on queue %s", serverName, queueName.str());
     }
-
+    
     virtual int run();
-
-    bool isRunning() const { return more; }
 
     void stop()
     {
@@ -88,7 +86,7 @@ private:
     CScheduleEventProcessor * processor;
     Owned<INamedQueueConnection> qconn;
     Owned<IQueueChannel> channel;
-    std::atomic<bool> more{false};
+    bool more;
 };
 
 class CScheduleTimer : public Thread
@@ -133,8 +131,6 @@ public:
 
     virtual int run();
 
-    bool isRunning() const { return more; }
-
     void stop()
     {
         more = false;
@@ -175,14 +171,14 @@ private:
     Owned<SubscriptionProxy> subsProxy;
     Owned<IScheduleReader> schedule;
     Owned<ICronTable> crontab;
-    std::atomic<bool> more;
+    bool more;
     Semaphore waiter;
 };
 
 class CScheduleEventProcessor : public CInterface, implements IScheduleEventProcessor
 {
 public:
-    CScheduleEventProcessor(char const *_serverName, IScheduleEventExecutor * _executor, IExceptionHandler * _handler)
+    CScheduleEventProcessor(char const *_serverName, IScheduleEventExecutor * _executor, IExceptionHandler * _handler) 
       : serverName(_serverName), executor(_executor), handler(_handler)
     {
         schedule.setown(getSubscribingScheduleReader(_serverName, NULL, NULL));
@@ -191,15 +187,13 @@ public:
     }
     IMPLEMENT_IINTERFACE;
 
-    virtual void start() override
+    virtual void start()
     {
         puller->start(false);
         timer->start(false);
     }
 
-    virtual bool isRunning() const override { return puller->isRunning() || timer->isRunning(); }
-
-    virtual void stop() override
+    virtual void stop()
     {
         timer->stop();
         puller->stop();
