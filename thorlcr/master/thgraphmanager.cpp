@@ -80,22 +80,18 @@ static void computeConfigSHA(StringBuffer &shaStr)
         if (!globalConfig)
             IWARNLOG("No global config!");
 
-        StringBuffer componentConfigXML;
+        StringBuffer configXML;
         if (componentConfig)
         {
-            toXML(componentConfig, componentConfigXML, 0, 0);
+            toXML(componentConfig, configXML, 0, 0);
         }
-        StringBuffer globalConfigXML;
         if (globalConfig)
         {
-            toXML(globalConfig, globalConfigXML, 0, 0);
+            toXML(globalConfig, configXML, 0, 0);
         }
 
-        if (componentConfigXML.length() || globalConfigXML.length())
+        if (configXML.length())
         {
-            StringBuffer configXML;
-            configXML.append(componentConfigXML);
-            configXML.append(globalConfigXML);
             hash64_t configHash = rtlHash64Data(configXML.length(), configXML.str(), 0);
             shaStr.appendf("%" I64F "x", configHash);
         }
